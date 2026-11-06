@@ -1,0 +1,177 @@
+# 데이터 사전 (기획서 9장 필드 준수)
+# 모든 시리즈는 한국은행 ECOS 오픈API에서 수집.
+# unit: 금리는 연 % (percent). 변화량 파생변수는 bp로 별도 생성하며 변수명에 단위를 넣는다.
+
+meta:
+  source: "한국은행 ECOS 오픈API (https://ecos.bok.or.kr)"
+  license_note: "한국은행 공공데이터. 출처 표시 후 이용 가능."
+  start_date: "20100101"
+  # end_date는 수집 시점의 최신 영업일로 자동 설정
+
+series:
+  # ---------- 국고채 수익률 곡선 (모듈 1) ----------
+  - variable_name: ktb1y_pct
+    description: 국고채 1년 수익률
+    stat_code: 817Y002
+    item_code: "010190000"
+    tenor_years: 1.0
+    group: curve
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "20000201"
+
+  - variable_name: ktb2y_pct
+    description: 국고채 2년 수익률
+    stat_code: 817Y002
+    item_code: "010195000"
+    tenor_years: 2.0
+    group: curve
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "20210310"   # 이력 짧음. 커브 적합 시 결측일은 해당 만기만 제외
+
+  - variable_name: ktb3y_pct
+    description: 국고채 3년 수익률
+    stat_code: 817Y002
+    item_code: "010200000"
+    tenor_years: 3.0
+    group: curve
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "19981113"
+
+  - variable_name: ktb5y_pct
+    description: 국고채 5년 수익률
+    stat_code: 817Y002
+    item_code: "010200001"
+    tenor_years: 5.0
+    group: curve
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "20000104"
+
+  - variable_name: ktb10y_pct
+    description: 국고채 10년 수익률
+    stat_code: 817Y002
+    item_code: "010210000"
+    tenor_years: 10.0
+    group: curve
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "20001218"
+
+  - variable_name: ktb20y_pct
+    description: 국고채 20년 수익률
+    stat_code: 817Y002
+    item_code: "010220000"
+    tenor_years: 20.0
+    group: curve
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "20060125"
+
+  - variable_name: ktb30y_pct
+    description: 국고채 30년 수익률
+    stat_code: 817Y002
+    item_code: "010230000"
+    tenor_years: 30.0
+    group: curve
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "20120911"
+
+  # ---------- 단기금리 / 유동성 (모듈 3·4 입력) ----------
+  - variable_name: call_on_pct
+    description: 콜금리(1일, 전체거래)
+    stat_code: 817Y002
+    item_code: "010101000"
+    tenor_years: 0.003
+    group: short
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "19950103"
+
+  - variable_name: cd91_pct
+    description: CD 91일 금리
+    stat_code: 817Y002
+    item_code: "010502000"
+    tenor_years: 0.25
+    group: short
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "19950103"
+
+  - variable_name: cp91_pct
+    description: CP 91일 금리
+    stat_code: 817Y002
+    item_code: "010503000"
+    group: liquidity
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "19950103"
+
+  - variable_name: msb1y_pct
+    description: 통화안정증권 1년 금리
+    stat_code: 817Y002
+    item_code: "010400001"
+    group: liquidity
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "19950103"
+
+  # ---------- 회사채 (모듈 3) ----------
+  - variable_name: corp_aa3y_pct
+    description: 회사채 3년 AA- 수익률 (무보증)
+    stat_code: 817Y002
+    item_code: "010300000"
+    group: credit
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "19950103"
+
+  - variable_name: corp_bbb3y_pct
+    description: 회사채 3년 BBB- 수익률
+    stat_code: 817Y002
+    item_code: "010320000"
+    group: credit
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_max5d
+    available_from: "20000930"
+
+  # ---------- 정책금리 (모듈 4) ----------
+  - variable_name: base_rate_pct
+    description: 한국은행 기준금리 (일별, 계단함수)
+    stat_code: 722Y001
+    item_code: "0101000"
+    group: policy
+    unit: percent
+    frequency: D
+    transform: level
+    missing_rule: ffill_unlimited   # 정책금리는 변경 전까지 유지되므로 무제한 ffill이 정의상 옳다
+    available_from: "19990506"
