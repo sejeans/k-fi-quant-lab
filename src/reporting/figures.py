@@ -165,6 +165,77 @@ def fig_credit(panel: pd.DataFrame) -> None:
     plt.close(fig)
 
 
+def fig_policy_timeline(panel: pd.DataFrame) -> None:
+    """금통위: 시장금리 기반 모델의 예측 확률 vs 실제 결정 (시계열)."""
+    f = PROC / "policy_predictions.parquet"
+    if not f.exists():
+        return
+    r = pd.read_parquet(f).sort_values("meeting_date")
+    INK, MUTED, BASE = "#0b0b0b", "#52514e", "#9a9993"
+    UP, DN = "#eb6834", "#2a78d6"
+    t0 = r["meeting_date"].min() - pd.Timedelta(days=60)
+    fig, ax = plt.subplots(3, 1, figsize=(12, 10), sharex=True,
+                           gridspec_kw={"height_ratios": [1, 1.4, 1]})
+    for a in ax:
+        a.spines[["top", "right"]].set_visible(False)
+
+    # (1) 기준금리와 국고 1년: 모델 입력인 시장 기대
+    w = panel.loc[t0:]
+    ax[0].plot(w.index, w["ktb1y_pct"], color=MUTED, lw=1.0, label="국고 1년 금리 (시장 기대)")
+    ax[0].step(w.index, w["base_rate_pct"], where="post", color=INK, lw=1.8, label="기준금리")
+    ax[0].set_ylabel("%", color=MUTED)
+    ax[0].set_title("국고 1년 금리가 기준금리보다 먼저 움직인다 (모델의 핵심 입력 = 두 금리의 차이)",
+                    loc="left", fontsize=10.5)
+    ax[0].legend(loc="upper left", frameon=False, ncol=1, fontsize=9, bbox_to_anchor=(1.005, 1))
+
+    # (2) 예측 확률: 위 = 인상, 아래 = 인하. 실제 결정 표시
+    x, wd = r["meeting_date"], 25
+    ax[1].bar(x, r["p_인상"], width=wd, color=UP, label="예측 P(인상)")
+    ax[1].bar(x, -r["p_인하"], width=wd, color=DN, label="예측 P(인하)")
+    ax[1].step(x, r["base_인상"], where="mid", color=BASE, lw=1, ls="--", label="기준선 (과거 빈도)")
+    ax[1].step(x, -r["base_인하"], where="mid", color=BASE, lw=1, ls="--")
+    up, dn = r[r["actual"] == "인상"], r[r["actual"] == "인하"]
+    ax[1].scatter(up["meeting_date"], [1.12] * len(up), marker="v", s=55, color=UP,
+                  edgecolor=INK, lw=0.6, zorder=3, label="실제 인상")
+    ax[1].scatter(dn["meeting_date"], [-1.12] * len(dn), marker="^", s=55, color=DN,
+                  edgecolor=INK, lw=0.6, zorder=3, label="실제 인하")
+    ax[1].axhline(0, color=MUTED, lw=0.8)
+    ax[1].set_ylim(-1.25, 1.25)
+    ax[1].set_yticks([-1, -0.5, 0, 0.5, 1], ["100%", "50%", "0", "50%", "100%"])
+    ax[1].set_ylabel("인하 확률  |  인상 확률", color=MUTED)
+    ax[1].set_title("회의별 예측 확률과 실제 결정 (walk-forward, 각 회의 전 정보만 사용)",
+                    loc="left", fontsize=10.5)
+    ax[1].legend(loc="upper left", frameon=False, ncol=1, fontsize=9, bbox_to_anchor=(1.005, 1))
+    for d, txt in [("2021-08-26", "첫 인상\nP=17%"), ("2024-10-11", "첫 인하\nP=37%")]:
+        row = r[r["meeting_date"] == pd.Timestamp(d)]
+        if not row.empty:
+            y = 0.55 if "인상" in txt else -0.75
+            ax[1].annotate(txt, (pd.Timestamp(d), 0.2 if y > 0 else -0.4), xytext=(pd.Timestamp(d), y),
+                           ha="center", fontsize=8.5, color=INK,
+                           arrowprops=dict(arrowstyle="-", color=MUTED, lw=0.8))
+
+    # (3) 실제 결정에 부여한 확률: 모델 vs 기준선
+    pm = r.apply(lambda q: q[f"p_{q['actual']}"], axis=1)
+    pb = r.apply(lambda q: q[f"base_{q['actual']}"], axis=1)
+    ll_m, ll_b = -np.log(pm.clip(1e-15)).mean(), -np.log(pb.clip(1e-15)).mean()
+    ax[2].vlines(x, pb, pm, color=np.where(pm >= pb, "#1baf7a", "#e34948"), lw=1.6)
+    ax[2].scatter(x, pb, s=14, color=BASE, zorder=3, label="기준선")
+    ax[2].scatter(x, pm, s=18, color=INK, zorder=3, label="모델")
+    ax[2].set_ylim(-0.03, 1.05)
+    ax[2].set_ylabel("실제 결정의 예측 확률", color=MUTED)
+    win = (pm > pb).mean() * 100
+    ax[2].set_title(f"실제 결정에 부여한 확률 (초록 = 모델이 기준선보다 높음, {win:.0f}% 회의)   "
+                    f"Log Loss 모델 {ll_m:.3f} vs 기준선 {ll_b:.3f}", loc="left", fontsize=10.5)
+    ax[2].legend(loc="upper left", frameon=False, ncol=1, fontsize=9, bbox_to_anchor=(1.005, 1))
+
+    fig.suptitle(f"금통위 결정 예측: 시장금리만 사용한 모델 vs 실제 ({len(r)}회, "
+                 f"{r['meeting_date'].min():%Y.%m}~{r['meeting_date'].max():%Y.%m})",
+                 x=0.01, ha="left", fontsize=13)
+    fig.tight_layout()
+    fig.savefig(FIG / "09_policy_actual_vs_pred.png", bbox_inches="tight", dpi=130)
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     FIG.mkdir(parents=True, exist_ok=True)
     panel = pd.read_parquet(PROC / "panel.parquet")
@@ -175,6 +246,7 @@ if __name__ == "__main__":
     fig_rmse_heatmap()
     fig_backtest()
     fig_policy()
+    fig_policy_timeline(panel)
     fig_credit(panel)
 
     made = sorted(FIG.glob("*.png"))
