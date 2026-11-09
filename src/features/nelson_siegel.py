@@ -3,7 +3,7 @@
 핵심 설계 (계획 Block 2-1)
 - lambda를 고정하면 loading이 상수가 되어 beta1/2/3는 '선형' 최소제곱으로 풀린다.
   매일 비선형 최적화를 돌리지 않으므로 4,000일 적합이 초 단위로 끝나고 발산 위험도 없다.
-- lambda는 전체 표본 SSE를 최소화하는 값을 그리드서치로 한 번 정해 고정한다.
+- lambda는 봉인 구간(마지막 2년)을 뺀 학습 구간의 적합 오차로 그리드서치해 한 번 정해 고정한다.
 - 만기별 관측 가능 여부가 날마다 다르다(2년물 2021~, 30년물 2012~).
   따라서 매일 '그날 관측된 만기만' 써서 적합한다. 최소 4개 만기 필요.
 """
@@ -82,7 +82,7 @@ def fit_all(panel: pd.DataFrame, lam: float) -> pd.DataFrame:
 
 
 def choose_lambda(panel: pd.DataFrame, grid: np.ndarray | None = None) -> tuple[float, pd.DataFrame]:
-    """전체 표본 평균 적합 RMSE를 최소화하는 lambda 선택."""
+    """넘겨받은 표본의 평균 적합 RMSE를 최소화하는 lambda 선택."""
     if grid is None:
         grid = np.arange(0.20, 0.85, 0.01)
     rows = []
@@ -109,7 +109,8 @@ if __name__ == "__main__":
     panel = pd.read_parquet(PROC / "panel.parquet")
 
     print("[1] lambda 그리드서치")
-    lam, tab = choose_lambda(panel)
+    cutoff = panel.index.max() - pd.DateOffset(years=2)      # 봉인 구간은 lambda 선택에도 쓰지 않는다
+    lam, tab = choose_lambda(panel.loc[:cutoff])
     print(tab.iloc[(tab["mean_rmse_bp"]).argsort()[:5]].to_string(index=False))
     print(f"\n선택된 lambda = {lam:.2f}")
     print(f"  -> 곡률 로딩 최대 만기 ~= {1.7933 / lam:.2f}년\n")

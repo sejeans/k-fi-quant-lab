@@ -131,7 +131,7 @@ with t1:
                                  name=f"{lbl} ({dt:%y-%m-%d})"))
     fig.update_layout(title="국고채 일드커브", xaxis_title="만기(년)",
                       yaxis_title="수익률(%)", height=420)
-    col1.plotly_chart(fig, use_container_width=True)
+    col1.plotly_chart(fig, width="stretch")
 
     col2.markdown("**Nelson-Siegel 요인 (현재)**")
     ns = factors.iloc[-1]
@@ -146,7 +146,7 @@ with t1:
                    ("beta3_curv", "β3 Curvature")]:
         f2.add_trace(go.Scatter(x=factors.index, y=factors[c_], name=nm, line=dict(width=1)))
     f2.update_layout(title="NS 요인 시계열", height=340)
-    st.plotly_chart(f2, use_container_width=True)
+    st.plotly_chart(f2, width="stretch")
 
 with t2:
     st.markdown("#### 금리커브 전망: 수준·기울기·곡률")
@@ -193,10 +193,11 @@ with t2:
         slp_f = contrib[j[10.0], 1] - contrib[j[3.0], 1]
         cur_f = 2 * contrib[j[3.0], 2] - contrib[j[1.0], 2] - contrib[j[10.0], 2]
         k1, k2, k3 = st.columns(3)
-        k1.metric("수준 · 전 구간 평행이동",
+        k1.metric("수준 · 전 구간 평행이동 (참고용)",
                   "금리 상승(약세)" if lvl_f > 0 else "금리 하락(강세)",
-                  f"{lvl_f:+.1f}bp", delta_color="inverse")
-        k1.caption(f"모든 만기를 같은 폭으로 움직이는 부분 · 방향 적중 {hit['수준']:.0f}%")
+                  f"{lvl_f:+.1f}bp", delta_color="off")
+        k1.caption(f":gray[모든 만기를 같은 폭으로 움직이는 부분 · 방향 적중 {hit['수준']:.0f}%]  \n"
+                   ":red[예측력 없음: 무작위(50%)와 구별되지 않아 참고용으로만 본다]")
         k2.metric("기울기 · 3s10s 스프레드",
                   "스티프닝" if slp_f > 0 else "플래트닝",
                   f"{slp_f:+.1f}bp", delta_color="off")
@@ -222,7 +223,7 @@ with t2:
         fz.update_layout(barmode="relative", height=400, yaxis_title="금리 변화(bp)",
                          title=f"만기별 {h}영업일 금리 변화 예측 (요인별 분해)",
                          legend=dict(orientation="h", y=-0.15))
-        st.plotly_chart(fz, use_container_width=True)
+        st.plotly_chart(fz, width="stretch")
         st.caption(f"+는 금리 상승(채권 가격 하락). NS 곡률 요인은 {1.7933 / D['lam']:.1f}년 "
                    "근처에서 가장 크게 움직여 3-5-10이 아닌 1-3-10 버터플라이로 쟀다. "
                    "요인별 예측을 합치면 신호가 뒤집힐 수 있어 매매 신호는 아래 직접 예측 모델을 쓴다.")
@@ -236,7 +237,7 @@ with t2:
         st.dataframe(m.style.format({"RW RMSE(bp)": "{:.2f}", "모델 RMSE(bp)": "{:.2f}",
                                      "개선율(%)": "{:+.2f}", "방향정확도(%)": "{:.1f}"})
                      .background_gradient(subset=["개선율(%)"], cmap="RdYlGn"),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
         st.caption("20영업일 예측. 단기물에서만 RW를 유의하게 이기고, 장기물은 이기지 못한다.")
 
     st.markdown("#### 전략 후보 선별")
@@ -255,7 +256,7 @@ with t2:
     if rows:
         st.dataframe(pd.DataFrame(rows).style.format(
             {"corr": "{:+.3f}", "방향정확도(%)": "{:.1f}", "RW대비 RMSE(%)": "{:+.2f}"}),
-            use_container_width=True, hide_index=True)
+            width="stretch", hide_index=True)
 
     if D["bt"] is not None:
         st.markdown("#### 버터플라이 백테스트 — 거래비용 스트레스")
@@ -266,7 +267,7 @@ with t2:
                                     mode="lines+markers", name=f"비용 {cx:.0f}배"))
         f3.add_hline(y=0, line_dash="dash", line_color="gray")
         f3.update_layout(xaxis_title="신호 임계 분위수", yaxis_title="Sharpe", height=380)
-        st.plotly_chart(f3, use_container_width=True)
+        st.plotly_chart(f3, width="stretch")
         st.warning("비용 1배에서만 양(+)의 Sharpe가 나오고 2배부터 손실이다. "
                    "**비용 가정 민감도가 지나치게 높아 운용 신호로 채택하지 않는다.**")
 
@@ -285,14 +286,14 @@ with t3:
                          line_color="crimson" if r["actual"] == "인상" else "royalblue")
         f4.update_layout(title="금통위 결정 확률 (walk-forward, 점선=실제 변경)",
                          yaxis_title="확률", height=420)
-        st.plotly_chart(f4, use_container_width=True)
+        st.plotly_chart(f4, width="stretch")
 
         st.markdown("#### 최근 10회")
         t = p.tail(10)[["meeting_date", "actual", "p_인하", "p_동결", "p_인상"]].copy()
         t["meeting_date"] = t["meeting_date"].dt.strftime("%Y-%m-%d")
         t.columns = ["회의일", "실제", "인하", "동결", "인상"]
         st.dataframe(t.style.format({"인하": "{:.1%}", "동결": "{:.1%}", "인상": "{:.1%}"}),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
         st.caption("한국은행 문서(결정문·의사록)를 사용하지 않은 시장가격 기반 모델이다. "
                    "NLP·LLM 결합은 확장 과제.")
 
@@ -303,13 +304,13 @@ with t4:
         f5.add_trace(go.Scatter(x=panel.index, y=panel[c_], name=lbl,
                                 line=dict(width=1)))
         f5.update_layout(title=f"{lbl} 크레딧 스프레드", yaxis_title="bp", height=340)
-        col.plotly_chart(f5, use_container_width=True)
+        col.plotly_chart(f5, width="stretch")
         z_ = ((panel[c_] - panel[c_].rolling(250).mean())
               / panel[c_].rolling(250).std()).iloc[-1]
         col.metric(f"{lbl} 현재", f"{panel[c_].iloc[-1]:.1f}bp", f"z={z_:+.2f}")
 
     if D["credit"] is not None:
-        st.dataframe(D["credit"], use_container_width=True, hide_index=True)
+        st.dataframe(D["credit"], width="stretch", hide_index=True)
     st.caption("ECOS 공개데이터에 등급×만기 매트릭스가 없어 2개 버킷만 다룬다. "
                "ECM 오차수정계수가 양수로 나와 20일 시계에서는 평균회귀보다 모멘텀이 우세했다.")
 
@@ -322,6 +323,6 @@ with t5:
                 for c in panel.columns],
     })
     st.dataframe(info.style.format({"결측률(%)": "{:.2f}", "최신값": "{:.3f}"}),
-                 use_container_width=True, hide_index=True, height=420)
+                 width="stretch", hide_index=True, height=420)
     st.caption(f"기간 {panel.index[0]:%Y-%m-%d} ~ {asof:%Y-%m-%d} · "
                f"{len(panel):,}행 × {panel.shape[1]}열 · 출처 한국은행 ECOS")

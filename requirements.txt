@@ -9,4 +9,3 @@ streamlit>=1.56.0
 requests>=2.33.1
 PyYAML>=6.0.3
 pyarrow>=23.0.1
-xgboost>=3.2.0
