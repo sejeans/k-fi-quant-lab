@@ -160,7 +160,7 @@ with t2:
             src = fc                                                   # 없으면 마지막 평가 행
         common = src["수준"].index.intersection(src["기울기"].index).intersection(src["곡률"].index)
         base = common[-1]
-        db = np.array([src[nm].loc[base, "enet"] for _, nm in NS_F])  # 요인 변화 예측(%p)
+        db = np.array([src[nm].loc[base, "final"] for _, nm in NS_F])  # 최종 예측(기울기만, 수준·곡률=0)
         taus = np.array([t for _, t in CURVE])
         contrib = ns_loadings(taus, D["lam"]) * db * 100              # (만기, 요인) bp
         total = contrib.sum(axis=1)
@@ -187,29 +187,31 @@ with t2:
                    + (f"{target:%Y-%m-%d} (이미 실현된 구간, 아래 차트에 실제 변화 표시)"
                       if target is not None else f"{h}영업일 후"))
 
-        hit = {nm: (np.sign(fc[nm]["enet"]) == np.sign(fc[nm]["actual"])).mean() * 100
-               for _, nm in NS_F}
-        lvl_f = contrib[0, 0]
-        slp_f = contrib[j[10.0], 1] - contrib[j[3.0], 1]
-        cur_f = 2 * contrib[j[3.0], 2] - contrib[j[1.0], 2] - contrib[j[10.0], 2]
+        rm = D[f"rmse{h}"]
+        r1 = rm.set_index("tenor").loc["ktb1y_pct"] if rm is not None else None
+        slp_f = total[j[10.0]] - total[j[3.0]]
+        fs = fc["기울기"]
+        hit_s = (np.sign(fs["final"]) == np.sign(fs["actual"])).mean() * 100
         k1, k2, k3 = st.columns(3)
-        k1.metric("수준 · 전 구간 평행이동 (참고용)",
-                  "금리 상승(약세)" if lvl_f > 0 else "금리 하락(강세)",
-                  f"{lvl_f:+.1f}bp", delta_color="off")
-        k1.caption(f":gray[모든 만기를 같은 폭으로 움직이는 부분 · 방향 적중 {hit['수준']:.0f}%]  \n"
-                   ":red[예측력 없음: 무작위(50%)와 구별되지 않아 참고용으로만 본다]")
+        k1.metric("국고 1년 · 가장 믿을 만한 예측",
+                  "금리 상승(약세)" if total[j[1.0]] > 0 else "금리 하락(강세)",
+                  f"{total[j[1.0]]:+.1f}bp", delta_color="inverse")
+        if r1 is not None and "dm_p" in r1:
+            k1.caption(f"봉인 구간 RW 대비 RMSE {r1['improve_pct']:+.1f}% (DM p={r1['dm_p']:.3f}), "
+                       f"겹치지 않는 구간 방향 적중 {r1['hit_indep_pct']:.0f}%")
         k2.metric("기울기 · 3s10s 스프레드",
                   "스티프닝" if slp_f > 0 else "플래트닝",
                   f"{slp_f:+.1f}bp", delta_color="off")
-        k2.caption(f"10년-3년 금리차 변화 중 기울기 요인 몫 · 방향 적중 {hit['기울기']:.0f}%")
-        k3.metric("곡률 · 1-3-10 버터플라이",
-                  "벨리(중기물) 약세" if cur_f > 0 else "벨리(중기물) 강세",
-                  f"{cur_f:+.1f}bp", delta_color="off")
-        k3.caption(f"3년물이 1·10년물 대비 얼마나 더 오르나(+) · 방향 적중 {hit['곡률']:.0f}%")
+        k2.caption(f"10년-3년 금리차 변화 · 기울기 요인 방향 적중 {hit_s:.0f}% (유의하지 않음)")
+        k3.metric("수준 · 곡률", "예측하지 않음", "RW: 변화 0 가정", delta_color="off")
+        k3.caption(":gray[두 요인은 예측을 쓰면 3~10년물 오차가 RW보다 커져 0으로 둔다. "
+                   "근거: src/experiments/ 비교 실험]")
 
         lbl = [f"{t:g}년" for t in taus]
         fz = go.Figure()
         for k, (_, nm) in enumerate(NS_F):
+            if not np.any(contrib[:, k]):                              # RW로 둔 요인은 생략
+                continue
             fz.add_trace(go.Bar(x=lbl, y=contrib[:, k], name=nm, marker_color=NS_COLOR[nm]))
         fz.add_trace(go.Scatter(x=lbl, y=total, name="예측 합계", mode="markers+lines",
                                 marker=dict(symbol="diamond", size=10, color="black"),
@@ -221,24 +223,26 @@ with t2:
                                     marker=dict(symbol="x", size=10, color="crimson")))
         fz.add_hline(y=0, line_color="gray", line_width=1)
         fz.update_layout(barmode="relative", height=400, yaxis_title="금리 변화(bp)",
-                         title=f"만기별 {h}영업일 금리 변화 예측 (요인별 분해)",
+                         title=f"만기별 {h}영업일 금리 변화 예측 (기울기 요인)",
                          legend=dict(orientation="h", y=-0.15))
         st.plotly_chart(fz, width="stretch")
-        st.caption(f"+는 금리 상승(채권 가격 하락). NS 곡률 요인은 {1.7933 / D['lam']:.1f}년 "
-                   "근처에서 가장 크게 움직여 3-5-10이 아닌 1-3-10 버터플라이로 쟀다. "
-                   "요인별 예측을 합치면 신호가 뒤집힐 수 있어 매매 신호는 아래 직접 예측 모델을 쓴다.")
+        st.caption("+는 금리 상승(채권 가격 하락). 기울기 요인은 단기물에 크게, 장기물에 작게 실리므로 "
+                   "예측 변화도 1년물이 가장 크다. 매매 신호는 아래 직접 예측 모델을 쓴다.")
 
     st.divider()
     st.markdown("#### 만기별 예측 성과 (Random Walk 대비 RMSE 개선율)")
     if D["rmse20"] is not None:
-        m = D["rmse20"][["tenor", "rw_rmse_bp", "model_rmse_bp", "improve_pct", "hit_pct"]].copy()
+        m = D["rmse20"][["tenor", "rw_rmse_bp", "model_rmse_bp", "improve_pct", "dm_p",
+                          "hit_indep_pct"]].copy()
         m["tenor"] = m["tenor"].str.replace("ktb", "").str.replace("_pct", "")
-        m.columns = ["만기", "RW RMSE(bp)", "모델 RMSE(bp)", "개선율(%)", "방향정확도(%)"]
+        m.columns = ["만기", "RW RMSE(bp)", "모델 RMSE(bp)", "개선율(%)", "DM p", "방향정확도(%)"]
         st.dataframe(m.style.format({"RW RMSE(bp)": "{:.2f}", "모델 RMSE(bp)": "{:.2f}",
-                                     "개선율(%)": "{:+.2f}", "방향정확도(%)": "{:.1f}"})
+                                     "개선율(%)": "{:+.2f}", "DM p": "{:.3f}",
+                                     "방향정확도(%)": "{:.1f}"})
                      .background_gradient(subset=["개선율(%)"], cmap="RdYlGn"),
                      width="stretch", hide_index=True)
-        st.caption("20영업일 예측. 단기물에서만 RW를 유의하게 이기고, 장기물은 이기지 못한다.")
+        st.caption("20영업일 예측, 봉인 구간. 전 만기가 RW 이상이지만 유의한(p<0.05) 개선 폭이 큰 것은 1년물뿐이다. "
+                   "방향정확도는 겹치지 않는 20일 구간 기준.")
 
     st.markdown("#### 전략 후보 선별")
     rows = []

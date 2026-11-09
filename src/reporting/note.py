@@ -73,25 +73,26 @@ def main() -> None:
     L.append("")
     L.append(f"- 적합: 전 기간 {factors['beta1_level'].notna().sum():,}일, "
              f"평균 적합오차 **{factors['fit_rmse_bp'].mean():.2f}bp**")
-    L.append("- λ는 전체 표본 SSE 최소값으로 고정 → β는 선형최소제곱으로 해석적으로 풀린다.")
+    L.append("- λ는 봉인 구간을 뺀 학습 구간의 적합 오차 최소값으로 고정해 β를 선형최소제곱으로 구한다.")
+    L.append("- 최종 예측: 기울기 요인만 ENet과 AR의 평균, 수준과 곡률은 0(RW). 근거는 README 개선 실험.")
     L.append("")
     h20 = load("curve_rmse_h20.csv")
     short_imp, bfly_hit, bfly_p = float("nan"), float("nan"), float("nan")
     if h20 is not None:
         L.append("### 만기별 20일 예측 (Random Walk 대비)")
         L.append("")
-        L.append("| 만기 | RW RMSE | 모델 RMSE | 개선율 | 방향정확도 |")
-        L.append("|---|---|---|---|---|")
+        L.append("| 만기 | RW RMSE | 모델 RMSE | 개선율 | DM p | 방향정확도(독립 구간) |")
+        L.append("|---|---|---|---|---|---|")
         for _, r in h20.iterrows():
             t = r["tenor"].replace("ktb", "").replace("_pct", "")
             L.append(f"| {t} | {r['rw_rmse_bp']:.2f}bp | {r['model_rmse_bp']:.2f}bp | "
-                     f"**{r['improve_pct']:+.2f}%** | {r['hit_pct']:.1f}% |")
+                     f"**{r['improve_pct']:+.2f}%** | {r['dm_p']:.3f} | {r['hit_indep_pct']:.1f}% |")
         L.append("")
         best = h20.loc[h20["improve_pct"].idxmax()]
         short_imp = best["improve_pct"]
-        L.append(f"**핵심:** 단기물({best['tenor'].replace('ktb','').replace('_pct','')})에서만 "
-                 f"RW를 유의하게 이긴다({best['improve_pct']:+.1f}%, 방향 {best['hit_pct']:.1f}%). "
-                 "장기물은 RW를 이기지 못한다.")
+        L.append(f"**핵심:** 개선 폭이 크고 유의한 것은 단기물({best['tenor'].replace('ktb','').replace('_pct','')})이다. "
+                 f"RW 대비 {best['improve_pct']:+.1f}%, DM p={best['dm_p']:.3f}. "
+                 "나머지 만기도 RW 이상이지만 개선 폭이 1~6%로 작고, 10년 이상은 dev 구간에서 유의하지 않았다.")
         L.append("")
         L.append("> 해석: 단기 구간은 정책금리 기대에 묶여 있어 커브 자체 정보로 예측 가능하지만, "
                  "10년 이상은 글로벌 듀레이션 수급이 지배해 국내 커브 정보만으로는 설명되지 않는다.")
