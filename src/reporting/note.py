@@ -76,6 +76,7 @@ def main() -> None:
     L.append("- λ는 전체 표본 SSE 최소값으로 고정 → β는 선형최소제곱으로 해석적으로 풀린다.")
     L.append("")
     h20 = load("curve_rmse_h20.csv")
+    short_imp, bfly_hit, bfly_p = float("nan"), float("nan"), float("nan")
     if h20 is not None:
         L.append("### 만기별 20일 예측 (Random Walk 대비)")
         L.append("")
@@ -87,6 +88,7 @@ def main() -> None:
                      f"**{r['improve_pct']:+.2f}%** | {r['hit_pct']:.1f}% |")
         L.append("")
         best = h20.loc[h20["improve_pct"].idxmax()]
+        short_imp = best["improve_pct"]
         L.append(f"**핵심:** 단기물({best['tenor'].replace('ktb','').replace('_pct','')})에서만 "
                  f"RW를 유의하게 이긴다({best['improve_pct']:+.1f}%, 방향 {best['hit_pct']:.1f}%). "
                  "장기물은 RW를 이기지 못한다.")
@@ -105,6 +107,13 @@ def main() -> None:
             continue
         rw = np.sqrt((d["actual"] ** 2).mean())
         md = np.sqrt(((d["actual"] - d["enet"]) ** 2).mean())
+        if tgt.startswith("bfly"):
+            from scipy.stats import binomtest
+            nz = d.iloc[::20]                         # 겹치지 않는 20일 구간만
+            k = int((np.sign(nz["enet"]) == np.sign(nz["actual"])).sum())
+            bfly_hit = (np.sign(d["enet"]) == np.sign(d["actual"])).mean() * 100
+            bfly_p = binomtest(k, len(nz), 0.5, alternative="greater").pvalue
+            bfly_nz = (k, len(nz))
         rows.append((lbl, d["enet"].corr(d["actual"]),
                      (np.sign(d["enet"]) == np.sign(d["actual"])).mean() * 100,
                      (rw - md) / rw * 100))
@@ -117,8 +126,10 @@ def main() -> None:
             ok = "거래" if (imp > 0 and h > 50) else "**거래 안 함**"
             L.append(f"| {lbl} | {c:+.3f} | {h:.1f}% | {imp:+.2f}% | {ok} |")
         L.append("")
-        L.append("> 슬로프는 예측력이 없어 매매 대상에서 제외했다. "
-                 "예측력이 확인된 버터플라이(=곡률 거래)만 백테스트한다.")
+        L.append("> 슬로프는 예측력이 없어 매매 대상에서 제외하고 버터플라이만 백테스트한다. "
+                 f"다만 20일 예측이 매일 겹쳐 독립 표본이 적다. 겹치지 않는 20일 구간만 세면 "
+                 f"버터플라이는 {bfly_nz[1]}개 중 {bfly_nz[0]}개 적중(이항검정 p={bfly_p:.2f})으로 "
+                 "통계적으로 유의하지 않다.")
         L.append("")
 
     bt = load("backtest_bfly_3s5s10s_bp.csv")
@@ -138,13 +149,14 @@ def main() -> None:
                  f"(분위 {best1x['signal_q']:.1f}, 거래 {int(best1x['n_trades'])}회)까지 나오지만, "
                  f"**비용 2배에서는 {'모든 설정이 손실' if pos2x.empty else '일부만 생존'}**이다.")
         L.append("")
-        L.append("> 기획서 2.4 원칙에 따라, 통계적 정확도(방향 63.5%)가 있어도 "
+        L.append(f"> 기획서 2.4 원칙에 따라, 방향 적중률({bfly_hit:.1f}%)이 50%를 넘어도 "
                  "비용 차감 후 경제적 가치가 확인되지 않으면 운용 신호로 채택하지 않는다. "
                  "이 전략은 **비용 가정에 대한 민감도가 지나치게 높다**는 것이 결론이다.")
         L.append("")
 
     # ---------- 4. 모듈 4 ----------
     pol = load("policy_predictions.parquet")
+    pol_sum, pol_ll = "N/A", float("nan")
     if pol is not None:
         L.append("## 4. 모듈 4 — 금통위 결정 확률")
         L.append("")
@@ -197,9 +209,11 @@ def main() -> None:
                  f"기준선 {-np.log(Bt[keep]).mean():.3f}로 격차가 더 벌어진다. "
                  "즉 전체 성과는 소수의 큰 실패에 크게 좌우된다.")
         L.append("")
-        L.append("> 실패는 2022년 긴축기에 집중된다. 시장금리(국고1년-기준금리 갭)는 인상을 "
-                 "선반영했지만 한국은행은 해당 회의에서 동결하고 *다른* 회의에서 인상했다. "
-                 "회의 캘린더 근사의 한계와 정책 타이밍 예측의 어려움이 함께 작용한 결과다.")
+        L.append("> 시장금리가 정책 변경을 먼저 반영했지만 한국은행이 그 회의에서는 동결하고 "
+                 "뒤 회의에서 움직인 경우가 큰 실패로 남는다. 방향보다 시점을 맞히기 어렵다.")
+        pol_sum = (f"Log Loss {(ll_b-ll_m)/ll_b*100:+.1f}%, Brier {(br_b-br_m)/br_b*100:+.1f}%, "
+                   f"Macro-F1 {f1_m:.3f} vs {f1_b:.3f}")
+        pol_ll = (ll_b - ll_m) / ll_b * 100
         L.append("")
         L.append("### 최근 6회 예측")
         L.append("")
@@ -247,19 +261,20 @@ def main() -> None:
     L.append("")
     L.append("| 모듈 | 통계적 성과 | 경제적 가치 | 판정 |")
     L.append("|---|---|---|---|")
-    L.append("| 1. 일드커브 | 단기물 RW 대비 +17.6%, 곡률 방향 63.5% | 비용 2배에서 소멸 | 부분 성공 |")
-    L.append("| 4. 금통위 | Log Loss +29.2%, Brier +19.7%, Macro-F1 0.449 vs 0.296 | "
-             "기준선 대비 전 지표 우위 | **성공** |")
-    L.append("| 3. 크레딧 | 방향 60~65%, PR-AUC 개선 미미 | 미검증 | 미달 |")
+    L.append(f"| 1. 일드커브 | 단기물 RW 대비 {short_imp:+.1f}%, 버터플라이 방향 {bfly_hit:.1f}% "
+             f"(p={bfly_p:.2f}) | 비용 2배에서 소멸 | 부분 성공 |")
+    L.append(f"| 4. 금통위 | {pol_sum} | 기준선 대비 전 지표 우위 | **성공** |")
+    cs_hit = (f"방향 {cs['hit'].min():.0f}~{cs['hit'].max():.0f}%" if cs is not None else "N/A")
+    L.append(f"| 3. 크레딧 | {cs_hit}, PR-AUC 개선 미미 | 미검증 | 미달 |")
     L.append("")
     L.append("**하루 예산으로 확인한 것**")
     L.append("")
     L.append("1. **금통위 확률 예측이 가장 잘 작동한다.** 한국은행 문서를 전혀 쓰지 않고 "
              "시장금리에 반영된 정책 기대(국고1년-기준금리 갭)만으로 "
-             "'항상 동결' 기준선을 Log Loss 기준 29.2% 개선했다.")
-    L.append("2. **커브 예측은 통계적으로는 되지만 경제적으로는 안 된다.** "
-             "단기물 RW 대비 +17.6%, 곡률 방향 63.5%로 예측력은 확인되나 "
-             "거래비용 2배에서 수익이 소멸한다.")
+             f"'항상 동결' 기준선을 Log Loss 기준 {pol_ll:.1f}% 개선했다.")
+    L.append("2. **커브는 단기물만 예측되고, 버터플라이 전략은 경제적 가치가 없다.** "
+             f"국고 1년은 RW 대비 {short_imp:+.1f}%로 예측된다. 버터플라이 방향 적중률은 {bfly_hit:.1f}%지만 "
+             f"독립 표본 기준으로 유의하지 않고(p={bfly_p:.2f}), 거래비용 2배에서 수익이 사라진다.")
     L.append("3. **크레딧은 이 데이터 범위에서 한계가 뚜렷하다.** "
              "ECM은 평균회귀 대신 모멘텀을 시사했고 급확대 조기경보의 PR-AUC 개선은 미미하다.")
     L.append("")

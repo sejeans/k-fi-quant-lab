@@ -27,16 +27,15 @@ import pandas as pd
 import statsmodels.api as sm
 from sklearn.linear_model import ElasticNetCV, LogisticRegression
 from sklearn.metrics import average_precision_score, precision_recall_curve
-from sklearn.preprocessing import StandardScaler
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from src.models.walkforward import split_live, walk_forward  # noqa: E402
+
 PROC = ROOT / "data" / "processed"
 
 H = 20
-MIN_TRAIN = 750
-REFIT_EVERY = 20
 HOLDOUT_YEARS = 2
 SEED = 42
 BUCKETS = {"cs_aa3y_bp": "AA- 3년", "cs_bbb3y_bp": "BBB- 3년"}
@@ -87,44 +86,14 @@ def run_ecm(panel: pd.DataFrame, target: str) -> None:
           f"({'평균회귀 확인' if b < 0 and m.pvalues['ecm'] < 0.05 else '유의한 평균회귀 아님'})")
 
 
-def walk_forward_reg(X: pd.DataFrame, y: pd.Series, split) -> pd.DataFrame:
-    df = X.join(y.rename("y")).dropna()
-    Xv, yv, idx = df.drop(columns="y").to_numpy(), df["y"].to_numpy(), df.index
-    pos = np.where(idx >= split)[0]
-    pos = pos[pos >= MIN_TRAIN]
-    if len(pos) == 0:
-        return pd.DataFrame()
-    pred = np.full(len(pos), np.nan)
-    mdl = sc = None
-    for k, i in enumerate(pos):
-        if k % REFIT_EVERY == 0:
-            sc = StandardScaler().fit(Xv[:i])
-            mdl = ElasticNetCV(l1_ratio=[0.1, 0.5, 0.9], cv=5, random_state=SEED,
-                               max_iter=5000, n_jobs=-1).fit(sc.transform(Xv[:i]), yv[:i])
-        pred[k] = mdl.predict(sc.transform(Xv[i:i + 1]))[0]
-    return pd.DataFrame({"actual": yv[pos], "enet": pred}, index=idx[pos])
+def enet_model():
+    return ElasticNetCV(l1_ratio=[0.1, 0.5, 0.9], cv=5, random_state=SEED,
+                        max_iter=5000, n_jobs=-1)
 
 
-def walk_forward_clf(X: pd.DataFrame, y: pd.Series, split) -> pd.DataFrame:
+def logit_model():
     """급확대 이진분류. class_weight로 불균형 처리(SMOTE 금지)."""
-    df = X.join(y.rename("y")).dropna()
-    Xv, yv, idx = df.drop(columns="y").to_numpy(), df["y"].to_numpy(int), df.index
-    pos = np.where(idx >= split)[0]
-    pos = pos[pos >= MIN_TRAIN]
-    if len(pos) == 0:
-        return pd.DataFrame()
-    prob = np.full(len(pos), np.nan)
-    mdl = sc = None
-    for k, i in enumerate(pos):
-        if k % REFIT_EVERY == 0:
-            if len(np.unique(yv[:i])) < 2:
-                continue
-            sc = StandardScaler().fit(Xv[:i])
-            mdl = LogisticRegression(max_iter=2000, C=0.1, class_weight="balanced",
-                                     random_state=SEED).fit(sc.transform(Xv[:i]), yv[:i])
-        if mdl is not None:
-            prob[k] = mdl.predict_proba(sc.transform(Xv[i:i + 1]))[0, 1]
-    return pd.DataFrame({"actual": yv[pos], "prob": prob}, index=idx[pos]).dropna()
+    return LogisticRegression(max_iter=2000, C=0.1, class_weight="balanced", random_state=SEED)
 
 
 if __name__ == "__main__":
@@ -144,7 +113,8 @@ if __name__ == "__main__":
 
         # (1) 방향 예측
         y = panel[tgt].shift(-H) - panel[tgt]
-        res = walk_forward_reg(X, y, split)
+        res, _ = split_live(walk_forward(X, y, split, H, enet_model)
+                            .rename(columns={"pred": "enet"}))
         if not res.empty:
             rw = np.sqrt((res["actual"] ** 2).mean())
             md = np.sqrt(((res["actual"] - res["enet"]) ** 2).mean())
@@ -160,7 +130,9 @@ if __name__ == "__main__":
         thresh = fwd.rolling(500, min_periods=250).quantile(0.90)
         y_bin = (fwd > thresh).astype(float)
         y_bin[fwd.isna() | thresh.isna()] = np.nan
-        clf = walk_forward_clf(X, y_bin.dropna(), split)
+        clf, _ = split_live(walk_forward(X, y_bin, split, H, logit_model, proba=True)
+                            .rename(columns={"pred": "prob"}))
+        clf = clf.dropna()
         if not clf.empty and clf["actual"].sum() > 0:
             ap = average_precision_score(clf["actual"], clf["prob"])
             base_rate = clf["actual"].mean()

@@ -1,8 +1,8 @@
 """모듈 4: 금통위 인상/동결/인하 확률 예측 (다항 로짓).
 
 설계 (기획서 6.5-6.6 / 계획 Block 3)
-- 표본이 적다(186회, 그중 동결 81%). 딥러닝 안 쓴다. Multinomial Logit.
-- 필수 기준선: '항상 동결'. 동결이 81%라 정확도만 보면 속는다.
+- 표본이 적다(실제 회의 163회, 그중 동결 79%). 딥러닝 안 쓴다. Multinomial Logit.
+- 필수 기준선: '항상 동결'. 동결이 79%라 정확도만 보면 속는다.
   -> Log Loss / Brier / Macro-F1로 평가한다.
 - 검증: 회의 순서를 지킨 expanding window. shuffle 금지.
 - 특징은 회의 '직전 영업일'까지의 시장 데이터만 사용(look-ahead 차단).
@@ -202,4 +202,24 @@ if __name__ == "__main__":
               f"{r['p_인하']:>8.1%}{r['p_동결']:>8.1%}{r['p_인상']:>8.1%}")
 
     res.to_parquet(PROC / "policy_predictions.parquet", index=False)
+
+    # 다음 회의 예측: 전체 표본으로 학습, 데이터 최신일까지의 시장가격으로 예측
+    from src.features.policy_events import MEETINGS_CSV
+    cal = pd.to_datetime(pd.read_csv(MEETINGS_CSV)["date"])
+    upcoming = cal[cal > panel.index.max()]
+    if upcoming.empty:
+        print("\n다음 회의 일정이 configs/mpc_meetings.csv에 없다. 일정을 추가할 것.")
+    else:
+        nxt = build_features(pd.DataFrame({"meeting_date": [upcoming.iloc[0]], "label": ["미정"]}),
+                             panel)
+        feat = [c for c in df.columns if c not in ("meeting_date", "label")]
+        sc = StandardScaler().fit(df[feat])
+        clf = LogisticRegression(max_iter=2000, C=0.05, random_state=SEED).fit(
+            sc.transform(df[feat]), df["label"])
+        prob = dict(zip(clf.classes_, clf.predict_proba(sc.transform(nxt[feat]))[0]))
+        out = pd.DataFrame([{"meeting_date": upcoming.iloc[0], "asof": panel.index.max(),
+                             **{f"p_{c}": prob.get(c, 0.0) for c in CLASSES}}])
+        out.to_parquet(PROC / "policy_next.parquet", index=False)
+        print(f"\n  [다음 회의 {upcoming.iloc[0]:%Y-%m-%d}] 시장 기준일 {panel.index.max():%Y-%m-%d}  "
+              + "  ".join(f"{c} {prob.get(c, 0.0):.1%}" for c in CLASSES))
     print(f"\n저장: {PROC / 'policy_predictions.parquet'}")

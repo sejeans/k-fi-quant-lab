@@ -24,16 +24,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import ElasticNetCV
-from sklearn.preprocessing import StandardScaler
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from src.models.walkforward import split_live, walk_forward  # noqa: E402
+
 PROC = ROOT / "data" / "processed"
 
 H = 20
-MIN_TRAIN = 750
-REFIT_EVERY = 20
 HOLDOUT_YEARS = 2
 SEED = 42
 
@@ -66,26 +65,9 @@ def make_features(panel: pd.DataFrame, factors: pd.DataFrame) -> pd.DataFrame:
     return X
 
 
-def walk_forward(X: pd.DataFrame, y: pd.Series, split: pd.Timestamp) -> pd.DataFrame:
-    df = X.join(y.rename("y")).dropna()
-    Xv, yv, idx = df.drop(columns="y").to_numpy(), df["y"].to_numpy(), df.index
-    pos = np.where(idx >= split)[0]
-    pos = pos[pos >= MIN_TRAIN]
-    if len(pos) == 0:
-        return pd.DataFrame()
-
-    pred = np.full(len(pos), np.nan)
-    model = scaler = None
-    for k, i in enumerate(pos):
-        if k % REFIT_EVERY == 0:
-            scaler = StandardScaler().fit(Xv[:i])
-            model = ElasticNetCV(
-                l1_ratio=[0.1, 0.5, 0.9], cv=5, random_state=SEED,
-                max_iter=5000, n_jobs=-1,
-            ).fit(scaler.transform(Xv[:i]), yv[:i])
-        pred[k] = model.predict(scaler.transform(Xv[i : i + 1]))[0]
-
-    return pd.DataFrame({"actual": yv[pos], "rw": 0.0, "enet": pred}, index=idx[pos])
+def enet_model():
+    return ElasticNetCV(l1_ratio=[0.1, 0.5, 0.9], cv=5, random_state=SEED,
+                        max_iter=5000, n_jobs=-1)
 
 
 if __name__ == "__main__":
@@ -100,7 +82,9 @@ if __name__ == "__main__":
 
     for tgt, label in TARGETS.items():
         y = panel[tgt].shift(-H) - panel[tgt]
-        res = walk_forward(X, y, split)
+        res, live = split_live(walk_forward(X, y, split, H, enet_model)
+                               .rename(columns={"pred": "enet"}).assign(rw=0.0))
+        live.to_parquet(PROC / f"live_direct_{tgt}_h{H}.parquet")
         if res.empty:
             print(f"[{label}] 표본 부족")
             continue

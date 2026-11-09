@@ -17,7 +17,11 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.features.nelson_siegel import CURVE, ns_loadings  # noqa: E402
+
 PROC = ROOT / "data" / "processed"
+NS_F = [("beta1_level", "수준"), ("beta2_slope", "기울기"), ("beta3_curv", "곡률")]
+NS_COLOR = {"수준": "#4C78A8", "기울기": "#F58518", "곡률": "#54A24B"}
 FIG = ROOT / "reports" / "figures"
 CLASSES = ["인하", "동결", "인상"]
 
@@ -29,6 +33,8 @@ def load_all():
     d = {"panel": pd.read_parquet(PROC / "panel.parquet"),
          "factors": pd.read_parquet(PROC / "ns_factors.parquet")}
     for k, f in [("policy", "policy_predictions.parquet"),
+                 ("policy_next", "policy_next.parquet"),
+                 ("bfly_live", "live_direct_bfly_3s5s10s_bp_h20.parquet"),
                  ("bfly", "fc_direct_bfly_3s5s10s_bp_h20.parquet"),
                  ("slope", "fc_direct_slope_3s10s_bp_h20.parquet")]:
         p = PROC / f
@@ -38,6 +44,13 @@ def load_all():
                  ("credit", "credit_summary.csv")]:
         p = PROC / f
         d[k] = pd.read_csv(p) if p.exists() else None
+    d["fc"] = {(h, f): pd.read_parquet(PROC / f"fc_{f}_h{h}.parquet")
+               for h in (5, 20) for f, _ in NS_F
+               if (PROC / f"fc_{f}_h{h}.parquet").exists()}
+    d["live"] = {(h, f): pd.read_parquet(PROC / f"live_{f}_h{h}.parquet")
+                 for h in (5, 20) for f, _ in NS_F
+                 if (PROC / f"live_{f}_h{h}.parquet").exists()}
+    d["lam"] = float(pd.read_json(PROC / "ns_config.json", typ="series")["lambda"])
     return d
 
 
@@ -54,11 +67,12 @@ st.subheader("운용 요약")
 c = st.columns(5)
 
 # 1. 금통위
-if D["policy"] is not None:
-    last = D["policy"].iloc[-1]
+if D["policy_next"] is not None:
+    last = D["policy_next"].iloc[0]
     up, hold, cut = last["p_인상"], last["p_동결"], last["p_인하"]
     top = max([("인상", up), ("동결", hold), ("인하", cut)], key=lambda x: x[1])
-    c[0].metric("① 다음 금통위", top[0], f"{top[1]:.0%}")
+    c[0].metric(f"① 다음 금통위 ({last['meeting_date']:%m/%d})", top[0], f"{top[1]:.0%}",
+                delta_color="off")
     c[0].caption(f"인상 {up:.0%} / 동결 {hold:.0%} / 인하 {cut:.0%}")
 else:
     c[0].metric("① 다음 금통위", "N/A")
@@ -70,9 +84,9 @@ c[1].metric("② 국고 3년 / 10년",
 c[1].caption(f"20일 변화 {(panel['ktb3y_pct'].iloc[-1]-panel['ktb3y_pct'].iloc[-21])*100:+.1f}bp")
 
 # 3. 커브
-if D["bfly"] is not None:
-    b = D["bfly"]["enet"].iloc[-1]
-    st_bfly = "곡률 확대" if b > 0 else "곡률 축소"
+if D["bfly_live"] is not None and not D["bfly_live"].empty:
+    b = D["bfly_live"]["enet"].iloc[-1]
+    st_bfly = "5년 벨리 약세" if b > 0 else "5년 벨리 강세"
     c[2].metric("③ 커브 전망 (20일)", st_bfly, f"{b:+.1f}bp")
     c[2].caption(f"3s10s는 예측력 없음 → 거래 대상 제외")
 else:
@@ -95,8 +109,8 @@ if D["bt"] is not None:
 
 st.info(
     "**해석 주의** · 모든 성과는 최근 2년을 봉인한 walk-forward 결과다. "
-    "커브 전략은 통계적 예측력(방향 63.5%)은 있으나 거래비용 2배에서 수익이 사라져 "
-    "운용 신호로 채택하지 않았다. 금통위 모델은 한국은행 문서를 사용하지 않은 "
+    "버터플라이 전략은 방향 적중률이 50%를 넘지만 통계적으로 유의하지 않고 거래비용 2배에서 "
+    "수익이 사라져 운용 신호로 채택하지 않았다. 금통위 모델은 한국은행 문서를 사용하지 않은 "
     "시장가격 기반 버전이다.",
     icon="ℹ️")
 
@@ -135,6 +149,85 @@ with t1:
     st.plotly_chart(f2, use_container_width=True)
 
 with t2:
+    st.markdown("#### 금리커브 전망: 수준·기울기·곡률")
+    h = st.radio("예측 기간", [20, 5], format_func=lambda x: f"{x}영업일", horizontal=True)
+    fc = {nm: D["fc"].get((h, f)) for f, nm in NS_F}
+    if any(v is None for v in fc.values()):
+        st.warning("NS 요인 예측 파일이 없다. src/models/curve_forecast.py를 먼저 실행할 것.")
+    else:
+        src = {nm: D["live"].get((h, f)) for f, nm in NS_F}            # 정답 없는 최신 예측
+        if any(v is None or v.empty for v in src.values()):
+            src = fc                                                   # 없으면 마지막 평가 행
+        common = src["수준"].index.intersection(src["기울기"].index).intersection(src["곡률"].index)
+        base = common[-1]
+        db = np.array([src[nm].loc[base, "enet"] for _, nm in NS_F])  # 요인 변화 예측(%p)
+        taus = np.array([t for _, t in CURVE])
+        contrib = ns_loadings(taus, D["lam"]) * db * 100              # (만기, 요인) bp
+        total = contrib.sum(axis=1)
+        j = {t: k for k, (_, t) in enumerate(CURVE)}                  # 만기(년) → 행 번호
+        d3, d10 = total[j[3.0]], total[j[10.0]]
+        lvl, spr = (d3 + d10) / 2, d10 - d3
+
+        # 시나리오: 금리 방향(불/베어) × 3s10s 방향(스티프/플랫). 1bp 미만은 보합 처리
+        if abs(lvl) < 1 and abs(spr) < 1:
+            scen, desc = "보합", "커브 형태 변화가 1bp 미만"
+        elif abs(spr) < 1:
+            scen = "불 평행이동" if lvl < 0 else "베어 평행이동"
+            desc = "전 구간 비슷하게 " + ("하락(강세)" if lvl < 0 else "상승(약세)")
+        else:
+            scen = ("불" if lvl < 0 else "베어") + (" 스티프닝" if spr > 0 else " 플래트닝")
+            lead = "단기물" if (lvl < 0) == (spr > 0) else "장기물"
+            desc = f"{lead} 주도 " + ("강세(금리 하락)" if lvl < 0 else "약세(금리 상승)")
+
+        i0 = panel.index.get_loc(base)
+        target = panel.index[i0 + h] if i0 + h < len(panel) else None
+        st.markdown(f"### {scen}  \n{desc} · 국고 3년 **{d3:+.1f}bp**, 10년 **{d10:+.1f}bp**, "
+                    f"3s10s **{spr:+.1f}bp**")
+        st.caption(f"예측 기준일 {base:%Y-%m-%d} → 목표일 "
+                   + (f"{target:%Y-%m-%d} (이미 실현된 구간, 아래 차트에 실제 변화 표시)"
+                      if target is not None else f"{h}영업일 후"))
+
+        hit = {nm: (np.sign(fc[nm]["enet"]) == np.sign(fc[nm]["actual"])).mean() * 100
+               for _, nm in NS_F}
+        lvl_f = contrib[0, 0]
+        slp_f = contrib[j[10.0], 1] - contrib[j[3.0], 1]
+        cur_f = 2 * contrib[j[3.0], 2] - contrib[j[1.0], 2] - contrib[j[10.0], 2]
+        k1, k2, k3 = st.columns(3)
+        k1.metric("수준 · 전 구간 평행이동",
+                  "금리 상승(약세)" if lvl_f > 0 else "금리 하락(강세)",
+                  f"{lvl_f:+.1f}bp", delta_color="inverse")
+        k1.caption(f"모든 만기를 같은 폭으로 움직이는 부분 · 방향 적중 {hit['수준']:.0f}%")
+        k2.metric("기울기 · 3s10s 스프레드",
+                  "스티프닝" if slp_f > 0 else "플래트닝",
+                  f"{slp_f:+.1f}bp", delta_color="off")
+        k2.caption(f"10년-3년 금리차 변화 중 기울기 요인 몫 · 방향 적중 {hit['기울기']:.0f}%")
+        k3.metric("곡률 · 1-3-10 버터플라이",
+                  "벨리(중기물) 약세" if cur_f > 0 else "벨리(중기물) 강세",
+                  f"{cur_f:+.1f}bp", delta_color="off")
+        k3.caption(f"3년물이 1·10년물 대비 얼마나 더 오르나(+) · 방향 적중 {hit['곡률']:.0f}%")
+
+        lbl = [f"{t:g}년" for t in taus]
+        fz = go.Figure()
+        for k, (_, nm) in enumerate(NS_F):
+            fz.add_trace(go.Bar(x=lbl, y=contrib[:, k], name=nm, marker_color=NS_COLOR[nm]))
+        fz.add_trace(go.Scatter(x=lbl, y=total, name="예측 합계", mode="markers+lines",
+                                marker=dict(symbol="diamond", size=10, color="black"),
+                                line=dict(color="black", width=1)))
+        if target is not None:
+            cols = [c for c, _ in CURVE]
+            real = (panel[cols].iloc[i0 + h] - panel[cols].iloc[i0]).to_numpy() * 100
+            fz.add_trace(go.Scatter(x=lbl, y=real, name="실제 변화", mode="markers",
+                                    marker=dict(symbol="x", size=10, color="crimson")))
+        fz.add_hline(y=0, line_color="gray", line_width=1)
+        fz.update_layout(barmode="relative", height=400, yaxis_title="금리 변화(bp)",
+                         title=f"만기별 {h}영업일 금리 변화 예측 (요인별 분해)",
+                         legend=dict(orientation="h", y=-0.15))
+        st.plotly_chart(fz, use_container_width=True)
+        st.caption(f"+는 금리 상승(채권 가격 하락). NS 곡률 요인은 {1.7933 / D['lam']:.1f}년 "
+                   "근처에서 가장 크게 움직여 3-5-10이 아닌 1-3-10 버터플라이로 쟀다. "
+                   "요인별 예측을 합치면 신호가 뒤집힐 수 있어 매매 신호는 아래 직접 예측 모델을 쓴다.")
+
+    st.divider()
     st.markdown("#### 만기별 예측 성과 (Random Walk 대비 RMSE 개선율)")
     if D["rmse20"] is not None:
         m = D["rmse20"][["tenor", "rw_rmse_bp", "model_rmse_bp", "improve_pct", "hit_pct"]].copy()

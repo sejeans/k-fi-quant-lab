@@ -20,19 +20,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import ElasticNetCV, LinearRegression
-from sklearn.preprocessing import StandardScaler
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src.features.nelson_siegel import CURVE, ns_loadings  # noqa: E402
+from src.models.walkforward import MIN_TRAIN, REFIT_EVERY, split_live, walk_forward  # noqa: E402
 
 PROC = ROOT / "data" / "processed"
 FACTORS = ["beta1_level", "beta2_slope", "beta3_curv"]
 HORIZONS = [5, 20]
 HOLDOUT_YEARS = 2
-MIN_TRAIN = 750           # 약 3년치 최소 학습표본
-REFIT_EVERY = 20          # 20영업일마다 재학습 (속도/현실성 균형)
 SEED = 42
 
 
@@ -52,38 +50,18 @@ def make_features(panel: pd.DataFrame, factors: pd.DataFrame) -> pd.DataFrame:
     return X
 
 
-def walk_forward(X: pd.DataFrame, y: pd.Series, split: pd.Timestamp) -> pd.DataFrame:
-    """expanding window 예측. split 이후 구간에 대해서만 예측을 생성한다."""
-    df = X.join(y.rename("y")).dropna()
-    if df.empty:
-        return pd.DataFrame()
+def enet_model():
+    return ElasticNetCV(l1_ratio=[0.1, 0.5, 0.9], cv=5, random_state=SEED,
+                        max_iter=5000, n_jobs=-1)
 
-    Xv, yv, idx = df.drop(columns="y").to_numpy(), df["y"].to_numpy(), df.index
-    test_pos = np.where(idx >= split)[0]
-    test_pos = test_pos[test_pos >= MIN_TRAIN]
-    if len(test_pos) == 0:
-        return pd.DataFrame()
 
-    preds = {"ar": np.full(len(test_pos), np.nan), "enet": np.full(len(test_pos), np.nan)}
-    ar_model = enet = scaler = None
-
-    for k, i in enumerate(test_pos):
-        if k % REFIT_EVERY == 0:                     # 주기적 재학습
-            Xtr, ytr = Xv[:i], yv[:i]
-            scaler = StandardScaler().fit(Xtr)
-            Xtr_s = scaler.transform(Xtr)
-            # AR: 해당 요인의 레벨/모멘텀만 사용하는 단순 선형모형
-            ar_model = LinearRegression().fit(Xtr[:, :4], ytr)
-            enet = ElasticNetCV(
-                l1_ratio=[0.1, 0.5, 0.9], cv=5, random_state=SEED, max_iter=5000, n_jobs=-1
-            ).fit(Xtr_s, ytr)
-        preds["ar"][k] = ar_model.predict(Xv[i : i + 1, :4])[0]
-        preds["enet"][k] = enet.predict(scaler.transform(Xv[i : i + 1]))[0]
-
-    return pd.DataFrame(
-        {"actual": yv[test_pos], "rw": 0.0, "ar": preds["ar"], "enet": preds["enet"]},
-        index=idx[test_pos],
-    )
+def forecast_factor(X: pd.DataFrame, f: str, h: int, split: pd.Timestamp) -> pd.DataFrame:
+    """요인 f의 h일 변화 예측. AR = 그 요인의 레벨/모멘텀 4개만 쓴 선형모형."""
+    y = X[f].shift(-h) - X[f]                       # t+h 변화량
+    en = walk_forward(X, y, split, h, enet_model)
+    ar = walk_forward(X[[f, f"{f}_d5", f"{f}_d20", f"{f}_z60"]], y, split, h, LinearRegression)
+    return pd.DataFrame({"actual": en["actual"], "rw": 0.0,
+                         "ar": ar["pred"].reindex(en.index), "enet": en["pred"]})
 
 
 def score(res: pd.DataFrame) -> pd.DataFrame:
@@ -123,8 +101,8 @@ if __name__ == "__main__":
     for h in HORIZONS:
         print(f"===== {h}영업일 예측 =====")
         for f in FACTORS:
-            y = factors[f].shift(-h) - factors[f]        # t+h 변화량
-            res = walk_forward(X, y, split)
+            res, live = split_live(forecast_factor(X, f, h, split))
+            live.to_parquet(PROC / f"live_{f}_h{h}.parquet")
             if res.empty:
                 print(f"  {f}: 표본 부족")
                 continue

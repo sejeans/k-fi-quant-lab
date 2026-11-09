@@ -1,15 +1,11 @@
-"""기준금리 일별 시계열 -> 금통위 이벤트·라벨 생성.
+"""기준금리 일별 시계열 + 실제 금통위 회의일 -> 이벤트·라벨 생성.
 
-근거 (사전 확인)
-- ECOS 722Y001 기준금리는 일별 계단함수다. 값이 바뀌는 날 = 정책 변경 발효일.
-- 따라서 변화점 탐지만으로 '결정일 + 방향(인상/동결/인하) + 변화폭(bp)'을 얻는다.
-  한국은행 결정문 PDF/HWP 파싱 없이 라벨링이 끝난다.
-
-한계 (반드시 명시)
-- 이 방식은 '변경이 있었던 회의'만 직접 관측한다. 동결 회의는 달력에서 따로 구성해야 한다.
-- 금통위 통방회의는 연 8회(2017년 이후)지만 그 이전에는 매월이었다.
-  실제 회의일 목록을 하드코딩하지 않고, '변경일 + 정기 회의 주기'로 근사한다.
-  -> 근사이므로 결과 해석 시 이 점을 밝힌다.
+- 회의일: configs/mpc_meetings.csv. 한국은행 '통화정책방향 결정회의' 연도별 일정
+  (bok.or.kr/portal/singl/crncyPolicyDrcMtg/listYear.do?mtgSe=A&menuNo=200755)에서 수집.
+  2020-03-16 임시회의 포함. 매년 초 새 일정을 추가한다.
+- 라벨: ECOS 722Y001 기준금리(일별 계단함수)의 변경일을 회의일에 붙인다.
+  변경은 보통 회의 당일 발효, 2020-03 임시회의만 다음 날 발효 -> 회의일 + 3일 이내 변경을 그 회의 결과로 본다.
+- 이전 버전은 '매월 둘째 목요일' 근사로 가짜 동결 회의를 만들었다(186회 중 21회가 20일 미만 간격).
 """
 
 from __future__ import annotations
@@ -43,50 +39,32 @@ def detect_changes(base: pd.Series) -> pd.DataFrame:
     }).reset_index(drop=True)
 
 
-def build_meetings(base: pd.Series) -> pd.DataFrame:
-    """금통위 회의 캘린더 근사 + 라벨.
+MEETINGS_CSV = ROOT / "configs" / "mpc_meetings.csv"
+EFFECT_LAG_DAYS = 3
 
-    구성 규칙
-    - 변경일은 실제 회의일이다(그날 결정이 발효).
-    - 동결 회의는 변경일 사이를 메우되, 2017년 이후 연 8회 / 이전 연 12회 주기를 가정한다.
-      매월 둘째주 목요일 근처를 회의일로 근사한다.
-    """
+
+def build_meetings(base: pd.Series) -> pd.DataFrame:
+    """실제 회의일에 기준금리 변경을 붙여 라벨링. 데이터 기간 안의 회의만 남긴다."""
     b = base.dropna()
     changes = detect_changes(b)
-    change_dates = set(changes["date"])
-
-    # 정기 회의 근사: 각 월의 둘째주 목요일
-    months = pd.date_range(b.index.min(), b.index.max(), freq="MS")
-    cand = []
-    for m in months:
-        thursdays = pd.date_range(m, m + pd.offsets.MonthEnd(0), freq="W-THU")
-        if len(thursdays) >= 2:
-            cand.append(thursdays[1])
-    cand = pd.DatetimeIndex(cand)
-
-    # 2017년 이후는 연 8회: 1,2,4,5,7,8,10,11월만 남긴다(실제 개최월과 근사)
-    keep = [d for d in cand if d.year < 2017 or d.month in (1, 2, 4, 5, 7, 8, 10, 11)]
-    meetings = sorted(set(keep) | change_dates)
+    mtg = pd.to_datetime(pd.read_csv(MEETINGS_CSV)["date"])
+    mtg = mtg[(mtg >= b.index.min()) & (mtg <= b.index.max())]
 
     rows = []
-    for dt in meetings:
-        if dt not in b.index:
-            # 거래일이 아니면 직전 거래일로 스냅
-            prior = b.index[b.index <= dt]
-            if len(prior) == 0:
-                continue
-            dt_use = prior[-1]
-        else:
-            dt_use = dt
+    for dt in mtg:
+        hit = changes[(changes["date"] >= dt)
+                      & (changes["date"] <= dt + pd.Timedelta(days=EFFECT_LAG_DAYS))]
+        ch = float(hit["change_bp"].sum())
+        rows.append({"meeting_date": dt, "change_bp": ch,
+                     "rate": float(b.loc[:dt + pd.Timedelta(days=EFFECT_LAG_DAYS)].iloc[-1])})
 
-        if dt in change_dates:
-            ch = float(changes.loc[changes["date"] == dt, "change_bp"].iloc[0])
-        else:
-            ch = 0.0
-        rows.append({"meeting_date": dt_use, "change_bp": ch,
-                     "rate": float(b.loc[dt_use])})
+    df = pd.DataFrame(rows)
+    # 모든 변경이 어느 회의에 붙었는지 확인 (캘린더 누락 탐지)
+    missed = changes[~changes["date"].isin(
+        [c for dt in mtg for c in changes["date"]
+         if dt <= c <= dt + pd.Timedelta(days=EFFECT_LAG_DAYS)])]
+    assert missed.empty, f"회의에 매칭되지 않은 기준금리 변경: {missed['date'].dt.date.tolist()}"
 
-    df = pd.DataFrame(rows).drop_duplicates("meeting_date").sort_values("meeting_date")
     df["label"] = np.select(
         [df["change_bp"] > 0, df["change_bp"] < 0], ["인상", "인하"], default="동결"
     )
